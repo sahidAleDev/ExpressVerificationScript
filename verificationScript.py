@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, PatternFill
 import csv
 import json
 
@@ -24,10 +24,12 @@ class CSVReader(DataReader):
                 loan_id = loan[0]
                 client_full_name = loan[2] + " " + loan[3] + " " + loan[4]
                 aval_full_name = loan[408] + " " + loan[409] + " " + loan[410]
+                agent = loan[12]
+                management = loan[13]
                 week = int(loan[15])
                 year = int(loan[16])
                 balance = loan[404].strip()
-                loans.append([loan_id, client_full_name, week, year, aval_full_name, balance])
+                loans.append([loan_id, client_full_name, week, year, aval_full_name, agent, management, balance])
 
         return loans
 
@@ -42,17 +44,28 @@ class JsonReader(DataReader):
         for loan in data:
             loan_id = loan['prestamoId']
             client_full_name = loan['nombres'] + " " + loan['apellidoPaterno'] + " " + loan['apellidoMaterno']
+            aval_full_name = loan['nombresAval'] + " " + loan['apellidoPaternoAval'] + " " + loan['apellidoMaternoAval']
             week = loan['semana']
             year = loan['anio']
-            aval_full_name = loan['nombresAval'] + " " + loan['apellidoPaternoAval'] + " " + loan['apellidoMaternoAval']
-            loans.append([loan_id, client_full_name, week, year, aval_full_name])
+            agent = loan['agente']
+            management = loan['gerencia']
+            loans.append([loan_id, client_full_name, week, year, aval_full_name, agent, management])
 
         return loans
 
 
 class ListComparer:
     def compare_lists(self, list1, list2):
-        result = [[item, item in list2] for item in list1]
+        # result = [[item, item in list2] for item in list1]
+        # return result
+        result = []
+        for item1 in list1:
+            matching_item = False
+            for item2 in list2:
+                if item1[0] == item2[0]:
+                    matching_item = True
+                    break
+            result.append([item1, matching_item])
         return result
 
 
@@ -68,13 +81,8 @@ class BalanceUpdater:
 
         for sublist1 in list_excel_crudo:
             for sublist2 in list_odoo:
-                if (
-                    sublist1[id_index] == sublist2[id_index]
-                    and sublist1[name_client_index] == sublist2[name_client_index]
-                    and sublist1[name_aval_index] == sublist2[name_aval_index]
-                    and sublist1[last_element_index] != " "
-                ):
-                    sublist2[5] = sublist1[last_element_index]
+                if (sublist1[id_index] == sublist2[id_index] and sublist1[last_element_index] != " "):
+                    sublist2[7] = sublist1[last_element_index]
 
 
 class ExcelFileCreator:
@@ -88,22 +96,29 @@ class ExcelFileCreator:
         sheet = self.workbook.active
         total_records, match, no_match = self.get_matches(data)
 
+        font = Font(bold=True)
         sheet['A1'] = 'IdPrestamo'
         sheet['B1'] = 'Nombre Cliente'
         sheet['C1'] = 'Semana'
         sheet['D1'] = 'Año'
         sheet['E1'] = 'Nombre del Aval'
-        sheet['F1'] = 'Saldo'
-        sheet['G1'] = 'Cant. Prestamos del Cliente'
-        sheet['H1'] = '¿Se encuentra en %s?' % source_of_comparison
+        sheet['F1'] = 'Agente'
+        sheet['G1'] = 'Gerencia'
 
-        sheet['J1'] = "Total de prestamos"
-        sheet['K1'] = "Coincidencias en %s" % source_of_comparison
-        sheet['L1'] = "No Coincidencias"
-        sheet['J2'] = total_records
-        sheet['K2'] = match
-        sheet['L2'] = no_match
 
+        sheet['H1'] = 'Saldo'
+        sheet['I1'] = 'Cant. Prestamos del Cliente'
+        sheet['J1'] = '¿Se encuentra en %s?' % source_of_comparison
+
+        sheet['L1'] = "Total de prestamos"
+        sheet['M1'] = "Coincidencias en %s" % source_of_comparison
+        sheet['N1'] = "No Coincidencias"
+        sheet['L2'] = total_records
+        sheet['M2'] = match
+        sheet['N2'] = no_match
+
+        sheet['A1'].font = sheet['B1'].font = sheet['C1'].font = sheet['D1'].font = sheet['E1'].font = sheet['F1'].font = sheet['G1'].font = sheet['H1'].font = sheet['I1'].font = sheet['J1'].font = font
+        
         for i, dato in enumerate(data, start=2):
             sheet[f'A{i}'] = dato[0][0]
             sheet[f'B{i}'] = dato[0][1]
@@ -111,18 +126,20 @@ class ExcelFileCreator:
             sheet[f'D{i}'] = dato[0][3]
             sheet[f'E{i}'] = dato[0][4]
             sheet[f'F{i}'] = dato[0][5]
+            sheet[f'G{i}'] = dato[0][6]
+            sheet[f'H{i}'] = dato[0][7]
             color = ""
 
-            if dato[0][5] == '$-' or dato[0][5] == "X":
-                color = "F48498"  # Ejemplo: rojo en formato RGB
+            if dato[0][7] == '$-' or dato[0][7] == "X": # Estado segun el saldo
+                color = "F48498"  
             else:
                 color = "ACD8AA"
 
             fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-            sheet[f'F{i}'].fill = fill
+            sheet[f'H{i}'].fill = fill
 
-            sheet[f'G{i}'] = dato[2]
-            sheet[f'H{i}'] = dato[1]
+            sheet[f'I{i}'] = dato[2]
+            sheet[f'J{i}'] = dato[1]
 
         full_file_name = file_name + ".xlsx"
         self.workbook.save(full_file_name)
@@ -167,8 +184,8 @@ class Application:
         self.loan_calculator = loan_calculator
 
     def run(self):
-        csv_sem_cruda_loan_data = self.excel_csv_reader.read_data("BD DINERO XPRESS 2023. CRUDA SEMANA 25 CSV.csv")
-        json_odoo_loan_data = self.odoo_json_reader.read_data("prestamos_v2_semana_26_anio_2023.json")
+        csv_sem_cruda_loan_data = self.excel_csv_reader.read_data("BD DINERO XPRESS 2023. CRUDA SEMANA 27 CSV.csv")
+        json_odoo_loan_data = self.odoo_json_reader.read_data("prestamos_semana28.json")
 
         self.balance_updater.add_balance_in_odoodata(csv_sem_cruda_loan_data, json_odoo_loan_data)
 
